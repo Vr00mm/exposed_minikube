@@ -1,96 +1,194 @@
-# exposed_minikube
+# litmus-local-dev-environment
 
+<p>Hello, here are few instruction to deploy a local kubernetes / litmus env for dev !!!</p>
 
-## Increase sysctl.fs.inotify.max_user_watch
-```
-sudo vim /etc/sysctl.conf 
-```
+### Install curl, jq and git
 
 ```
-fs.inotify.max_user_watches = 524288
-fs.inotify.max_user_instances = 512
-```
-## Configure ZSH Arc size
-
-```
-sudo vim /etc/modprobe.d/zfs.conf
+sudo apt update && sudo apt install -y curl jq git
 ```
 
-```
-# Setting up ZFS ARC size on Ubuntu as per our needs
-# Set Max ARC size => 2GB == 2147483648 Bytes
-options zfs zfs_arc_max=2147483648
- 
-# Set Min ARC size => 1GB == 1073741824
-options zfs zfs_arc_min=1073741824
-```
+### Install docker
+
+<p> Install docker requirements </p>
 
 ```
-sudo update-initramfs -u -k all
+sudo apt update && sudo apt install \
+    ca-certificates \
+    gnupg \
+    lsb-release
 ```
 
-REBOOT THE COMPUTER NOW
-
-## Start minikube
-```
-minikube start \
- --kubernetes-version=v1.20.0 \
- --nodes=6 \
- --driver=docker \
- --addons=ingress
-```
-
-## Open ports
+<p> Add Docker’s official GPG key: </p>
 
 ```
-# Get minikube IP
-MINIKUBE_IP=$(minikube ip)
-
-# Get minikube network interface
-MINIKUBE_INTERFACE=$(ls /sys/class/net/ |grep br)
-
-# Get Ingress http nodePort
-HTTP_PORT=$(minikube kubectl -- -n ingress-nginx get svc/ingress-nginx-controller -ojson  | jq -r '.spec.ports[0].nodePort')
-# Get Ingress https nodePort
-HTTPS_PORT=$(minikube kubectl -- -n ingress-nginx get svc/ingress-nginx-controller -ojson  | jq -r '.spec.ports[1].nodePort')
-
-# Expose Docker Ingress ports
-sudo iptables -A DOCKER -d ${MINIKUBE_IP}/32 ! -i ${MINIKUBE_INTERFACE} -o ${MINIKUBE_INTERFACE} -p tcp -m tcp --dport ${HTTP_PORT} -j ACCEPT
-sudo iptables -A DOCKER -d ${MINIKUBE_IP}/32 ! -i ${MINIKUBE_INTERFACE} -o ${MINIKUBE_INTERFACE} -p tcp -m tcp --dport ${HTTPS_PORT} -j ACCEPT
-
-# Forward host to docker
-sudo iptables -t nat -A PREROUTING -i enp5s0 -p tcp --dport 80 -j DNAT \
-      --to ${MINIKUBE_IP}:${HTTP_PORT}
-
-sudo iptables -t nat -A PREROUTING -i enp5s0 -p tcp --dport 443 -j DNAT \
-      --to ${MINIKUBE_IP}:${HTTPS_PORT}
-
-sudo iptables -t nat -A PREROUTING -i enp5s0 -p tcp --dport 8443 -j DNAT \
-      --to ${MINIKUBE_IP}:8443
+sudo mkdir -p /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+sudo chmod a+r /etc/apt/keyrings/docker.gpg
 ```
 
-
-## Generate KubeConfig
+<p> Set up the repository: </p>
 
 ```
-mv ~/.kube/config{,.back}
+echo \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+  $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+```
+
+<p> Finally install docker </p>
+
+```
+sudo apt update && sudo apt install docker-ce docker-ce-cli containerd.io
+```
+
+<p> Add your user to docker group</p>
+
+```
+sudo usermod -aG docker $USER && newgrp docker
+```
+
+### Download && install minikube
+
+```
+curl -Lo minikube https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64 \
+  && chmod +x minikube
+sudo install minikube /usr/local/bin/
+```
+
+### Download and install helm
+
+```
+cd /tmp
+curl -fsSL -o helm.tgz https://get.helm.sh/helm-v3.9.0-linux-amd64.tar.gz \
+  && tar xzvf helm.tgz \
+  && sudo install linux-amd64/helm /usr/local/bin/
+```
+### Finally restart your computer
+
+```
+reboot
+```
+
+## Run kubernetes local cluster
+
+### Configure and run minikube cluster
+
+<p> Lets configure our cluster ( customize it ) </p>
+
+```
+export CLUSTER_CPUS=4
+export CLUSTER_RAM=8g
+export CLUSTER_K8S_VERSION=v1.22.9
+```
+
+<p> And now, lets start our cluster </p>
+
+```
+minikube start --driver=docker \
+  --cpus=${CLUSTER_CPUS} \
+  --memory=${CLUSTER_RAM} \
+  --kubernetes-version=${CLUSTER_K8S_VERSION}
+```
+
+<p> Check our cluster is started </p>
+
+```
+minikube status
+```
+
+## Interact with our minikube cluster
+
+<p> Setup kubectl </p>
+
+```
+alias kubectl='minikube kubectl --'
+```
+
+<p> Update kubeconfig context to target minikube</p>
+
+```
+cp ~/.kube/config{,_backup}
 minikube update-context
-cp ~/.kube/config ~/.kube/config_external
+```
 
-crtPath=`yq e '.users[0].user.client-certificate' ~/.kube/config`
-keyPath=`yq e '.users[0].user.client-key' ~/.kube/config`
+<p> Lets try to reach our cluster</p>
 
-crtData=`cat ${crtPath} |base64 --wrap=0`
-keyData=`cat ${keyPath} |base64 --wrap=0`
+```
+kubectl get node
+```
 
-yq e -i 'del(.users[0].user.client-certificate)' ~/.kube/config_external
-yq e -i 'del(.users[0].user.client-key)' ~/.kube/config_external
-yq e -i 'del(.clusters[0].cluster.certificate-authority)' ~/.kube/config_external
+<p>We're now ready to deploy litmus !!!</p>
 
-yq e -i "
-  .users[0].user.client-certificate-data = \"${crtData}\" |
-  .users[0].user.client-key-data = \"${keyData}\" |
-  .clusters[0].cluster.insecure-skip-tls-verify = true |
-  .clusters[0].cluster.server = \"https://2.9.202.71:8443\"
-" ~/.kube/config_external
+## Deploy litmus
+
+<p> Download helm chart </p>
+
+```
+cd ~
+git clone https://github.com/litmuschaos/litmus-helm
+cd litmus-helm
+```
+
+<p> Deploy litmus helm chart</p>
+
+```
+helm upgrade --install litmus charts/litmus --namespace litmus --create-namespace --wait
+```
+
+<p> Login to deploy self-agent</p>
+
+```
+MINIKUBE_IP=$(minikube ip)
+LITMUS_PORT=$(minikube kubectl -- -n litmus get svc/litmus-frontend-service -ojson  | jq -r '.spec.ports[0].nodePort')
+echo http://${MINIKUBE_IP}:${LITMUS_PORT}
+
+```
+<p>Use control + click on link to open in your browser</p>
+
+
+<p>Wait for the agent active</p>
+
+```
+kubectl -n litmus wait pods --for condition=Ready -l name
+kubectl -n litmus wait pods --for condition=Ready -l app
+```
+
+<p>we're ready to dev :)</p>
+
+## Example for subscriber
+
+<p>Download litmus</p>
+
+```
+cd ~
+git clone https://github.com/litmuschaos/litmus
+cd litmus/litmus-portal/cluster-agents/subscriber
+```
+
+<p>Build docker image</p>
+
+```
+docker build . -t subscriber:dev
+```
+
+<p>Scale off the current subscriber</p>
+
+```
+kubectl -n litmus scale deployment subscriber --replicas=0
+```
+
+<p>create env-file, you need update this env-file after each reboot</p>
+
+```
+echo -n > env-file
+echo ACCESS_KEY=$(kubectl -n litmus get secret/agent-secret -ojson | jq -r '.data.ACCESS_KEY' |base64 -d) >> env-file
+echo CLUSTER_ID=$(kubectl -n litmus get secret/agent-secret -ojson | jq -r '.data.CLUSTER_ID' |base64 -d) >> env-file
+echo AGENT_SCOPE=$(kubectl -n litmus get cm/agent-config -ojson | jq -r '.data.AGENT_SCOPE') >> env-file
+echo COMPONENTS=$(kubectl -n litmus get cm/agent-config -ojson | jq -r '.data.COMPONENTS') >> env-file
+echo CUSTOM_TLS_CERT=$(kubectl -n litmus get cm/agent-config -ojson | jq -r '.data.CUSTOM_TLS_CERT') >> env-file
+echo IS_CLUSTER_CONFIRMED=$(kubectl -n litmus get cm/agent-config -ojson | jq -r '.data.IS_CLUSTER_CONFIRMED') >> env-file
+echo SERVER_ADDR=$(kubectl -n litmus get cm/agent-config -ojson | jq -r '.data.SERVER_ADDR') >> env-file
+echo SKIP_SSL_VERIFY=$(kubectl -n litmus get cm/agent-config -ojson | jq -r '.data.SKIP_SSL_VERIFY') >> env-file
+echo START_TIME=$(kubectl -n litmus get cm/agent-config -ojson | jq -r '.data.START_TIME') >> env-file
+echo VERSION=$(kubectl -n litmus get cm/agent-config -ojson | jq -r '.data.VERSION') >> env-file
 ```
